@@ -6,3 +6,22 @@
 
 # Local secrets (do not commit)
 include/secrets.h
+
+# Env files (keep *.env.example committed)
+.env*
+!.env.example
+backend/.env*
+!backend/.env.example
+
+# Node dependencies
+node_modules/
+
+# Backend build output
+backend/dist/
+
+# Local backend data (SQLite + WAL/SHM)
+backend/data/*.sqlite
+backend/data/*.sqlite-*
+
+# OS junk
+.DS_Store
