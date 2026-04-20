@@ -1,0 +1,172 @@
+import http from "node:http";
+import { nanoid } from "nanoid";
+
+import { env } from "./env.js";
+import { openDb, initDb } from "./db.js";
+import { connectMqtt, topicsFromEnv } from "./mqtt.js";
+import { createRealtime } from "./realtime.js";
+import { createApi } from "./api.js";
+import { DeviceStateSchema, TelemetrySchema, type Command } from "./schemas.js";
+
+function upsertDevice(db: any, deviceId: string, now: number) {
+  db.prepare(
+    `insert into devices(deviceId, lastSeenTs, lastTelemetryTs, lastStateTs, online)
+     values(?, ?, null, null, 0)
+     on conflict(deviceId) do update set lastSeenTs = excluded.lastSeenTs`
+  ).run(deviceId, now);
+}
+
+function setDeviceOnline(db: any, deviceId: string, online: boolean, now: number) {
+  upsertDevice(db, deviceId, now);
+  db.prepare(`update devices set online = ?, lastSeenTs = ? where deviceId = ?`).run(online ? 1 : 0, now, deviceId);
+}
+
+async function main() {
+  const db = openDb();
+  initDb(db);
+
+  const mqttClient = connectMqtt();
+  const t = topicsFromEnv();
+
+  const publishCommand = async (deviceId: string, command: Command): Promise<{ cmdId: string }> => {
+    const cmdId = command.cmdId || `cmd_${nanoid(16)}`;
+    const toPublish = { ...command, cmdId };
+    const payload = JSON.stringify(toPublish);
+
+    await new Promise<void>((resolve) => {
+      mqttClient.publish(t.cmdTopic(deviceId), payload, { qos: 1, retain: false }, (err) => {
+        const publishedAt = Date.now();
+        if (!err) {
+          db.prepare(
+            `insert into command_log(cmdId, deviceId, ts, type, payload, publishedAt)
+             values(?, ?, ?, ?, ?, ?)`
+          ).run(cmdId, deviceId, Math.trunc(command.ts), command.type, payload, publishedAt);
+        }
+        resolve();
+      });
+    });
+
+    return { cmdId };
+  };
+
+  const api = createApi(db, publishCommand);
+  const server = http.createServer(api);
+  const rt = createRealtime(server);
+
+  mqttClient.on("connect", () => {
+    mqttClient.subscribe([t.telemetryTopicPrefix, t.stateTopicPrefix], { qos: 0 });
+    // eslint-disable-next-line no-console
+    console.log("MQTT connected");
+  });
+  mqttClient.on("reconnect", () => {
+    // eslint-disable-next-line no-console
+    console.log("MQTT reconnecting...");
+  });
+  mqttClient.on("offline", () => {
+    // eslint-disable-next-line no-console
+    console.log("MQTT offline");
+  });
+  mqttClient.on("error", (err) => {
+    // eslint-disable-next-line no-console
+    console.error("MQTT error", err.message);
+  });
+
+  mqttClient.on("message", (topic, payload) => {
+    const now = Date.now();
+    const parts = topic.split("/");
+    const baseParts = env.MQTT_BASE_TOPIC.replace(/\/+$/, "").split("/");
+    if (parts.length < baseParts.length + 2) return;
+
+    const deviceId = parts[baseParts.length];
+    const kind = parts[baseParts.length + 1];
+    if (!deviceId || !kind) return;
+
+    upsertDevice(db, deviceId, now);
+
+    try {
+      const json = JSON.parse(payload.toString("utf8"));
+
+      if (kind === "telemetry") {
+        const parsed = TelemetrySchema.safeParse(json);
+        if (!parsed.success) return;
+
+        const m = parsed.data;
+        db.prepare(
+          `insert into telemetry(deviceId, ts, seq, tempC, humidityPct, soilRaw, soilPct, waterLevelPct, rssi, vbat, gpsLat, gpsLon, gpsHdop, receivedAt)
+           values(@deviceId, @ts, @seq, @tempC, @humidityPct, @soilRaw, @soilPct, @waterLevelPct, @rssi, @vbat, @gpsLat, @gpsLon, @gpsHdop, @receivedAt)`
+        ).run({
+          deviceId: m.deviceId,
+          ts: Math.trunc(m.ts),
+          seq: m.seq,
+          tempC: m.tempC ?? null,
+          humidityPct: m.humidityPct ?? null,
+          soilRaw: m.soilRaw,
+          soilPct: m.soilPct,
+          waterLevelPct: m.waterLevelPct ?? null,
+          rssi: m.rssi ?? null,
+          vbat: m.vbat ?? null,
+          gpsLat: m.gps?.lat ?? null,
+          gpsLon: m.gps?.lon ?? null,
+          gpsHdop: m.gps?.hdop ?? null,
+          receivedAt: now
+        });
+        db.prepare(`update devices set lastTelemetryTs = ?, lastSeenTs = ? where deviceId = ?`).run(now, now, deviceId);
+        setDeviceOnline(db, deviceId, true, now);
+        rt.broadcast({ type: "telemetry", deviceId, data: m });
+      } else if (kind === "state") {
+        const parsed = DeviceStateSchema.safeParse(json);
+        if (!parsed.success) return;
+
+        const s = parsed.data;
+        db.prepare(
+          `insert into device_state(deviceId, ts, pumpOn, fanOn, mode, lastCmdId, receivedAt)
+           values(@deviceId, @ts, @pumpOn, @fanOn, @mode, @lastCmdId, @receivedAt)
+           on conflict(deviceId) do update set
+             ts = excluded.ts,
+             pumpOn = excluded.pumpOn,
+             fanOn = excluded.fanOn,
+             mode = excluded.mode,
+             lastCmdId = excluded.lastCmdId,
+             receivedAt = excluded.receivedAt`
+        ).run({
+          deviceId: s.deviceId,
+          ts: Math.trunc(s.ts),
+          pumpOn: s.pumpOn ? 1 : 0,
+          fanOn: s.fanOn ? 1 : 0,
+          mode: s.mode,
+          lastCmdId: s.lastCmdId ?? null,
+          receivedAt: now
+        });
+        db.prepare(`update devices set lastStateTs = ?, lastSeenTs = ? where deviceId = ?`).run(now, now, deviceId);
+        setDeviceOnline(db, deviceId, true, now);
+        rt.broadcast({ type: "state", deviceId, data: s });
+      }
+    } catch {
+      return;
+    }
+  });
+
+  server.on("error", (err: any) => {
+    if (err?.code === "EADDRINUSE") {
+      // eslint-disable-next-line no-console
+      console.error(`Port ${env.PORT} is already in use. Set a different PORT in backend/.env (e.g. 8081).`);
+      process.exit(1);
+    }
+  });
+  server.listen(env.PORT, () => {
+    // eslint-disable-next-line no-console
+    console.log(`Planty backend listening on ${env.PUBLIC_BASE_URL}`);
+  });
+
+  process.on("SIGINT", () => {
+    mqttClient.end(true);
+    server.close(() => process.exit(0));
+  });
+}
+
+main().catch((err) => {
+  // eslint-disable-next-line no-console
+  console.error(err);
+  process.exit(1);
+});
+
