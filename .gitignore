@@ -6,6 +6,8 @@
 
 # Local secrets (do not commit)
 include/secrets.h
+include/secrets.example.h
+
 
 # Env files (keep *.env.example committed)
 .env*

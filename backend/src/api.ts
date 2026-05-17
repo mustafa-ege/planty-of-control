@@ -34,9 +34,9 @@ export function createApi(db: Db, publishCommand: PublishCommand) {
   app.get("/api/devices/:id/latest", (req, res) => {
     const deviceId = req.params.id;
 
-    const telemetry = (db
+const telemetry = (db
       .prepare(
-        `select ts, seq, tempC, humidityPct, soilRaw, soilPct, waterLevelPct, rssi, vbat, gpsLat, gpsLon, gpsHdop
+        `select ts, seq, tempC, humidityPct, soilRaw, soilPct, waterLevelPct, lightPct, rssi, vbat, gpsLat, gpsLon, gpsHdop
          from telemetry
          where deviceId = ?
          order by ts desc
@@ -63,6 +63,7 @@ export function createApi(db: Db, publishCommand: PublishCommand) {
             soilRaw: telemetry.soilRaw,
             soilPct: telemetry.soilPct,
             waterLevelPct: telemetry.waterLevelPct,
+            lightPct: telemetry.lightPct,
             rssi: telemetry.rssi,
             vbat: telemetry.vbat,
             gps:
@@ -87,9 +88,9 @@ export function createApi(db: Db, publishCommand: PublishCommand) {
     const deviceId = req.params.id;
     const limit = Math.min(Number(req.query.limit ?? 300), 5000);
 
-    const rows = db
+  const rows = db
       .prepare(
-        `select ts, seq, tempC, humidityPct, soilRaw, soilPct, waterLevelPct, rssi
+        `select ts, seq, tempC, humidityPct, soilRaw, soilPct, waterLevelPct, lightPct, rssi
          from telemetry
          where deviceId = ?
          order by ts desc

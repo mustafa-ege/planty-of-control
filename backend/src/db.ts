@@ -38,6 +38,7 @@ export function initDb(db: Db) {
       soilRaw integer not null,
       soilPct real not null,
       waterLevelPct real,
+      lightPct real,
       rssi integer,
       vbat real,
       gpsLat real,

@@ -86,14 +86,14 @@ async function main() {
     try {
       const json = JSON.parse(payload.toString("utf8"));
 
-      if (kind === "telemetry") {
+if (kind === "telemetry") {
         const parsed = TelemetrySchema.safeParse(json);
         if (!parsed.success) return;
 
         const m = parsed.data;
         db.prepare(
-          `insert into telemetry(deviceId, ts, seq, tempC, humidityPct, soilRaw, soilPct, waterLevelPct, rssi, vbat, gpsLat, gpsLon, gpsHdop, receivedAt)
-           values(@deviceId, @ts, @seq, @tempC, @humidityPct, @soilRaw, @soilPct, @waterLevelPct, @rssi, @vbat, @gpsLat, @gpsLon, @gpsHdop, @receivedAt)`
+          `insert into telemetry(deviceId, ts, seq, tempC, humidityPct, soilRaw, soilPct, waterLevelPct, lightPct, rssi, vbat, gpsLat, gpsLon, gpsHdop, receivedAt)
+           values(@deviceId, @ts, @seq, @tempC, @humidityPct, @soilRaw, @soilPct, @waterLevelPct, @lightPct, @rssi, @vbat, @gpsLat, @gpsLon, @gpsHdop, @receivedAt)`
         ).run({
           deviceId: m.deviceId,
           ts: Math.trunc(m.ts),
@@ -103,6 +103,7 @@ async function main() {
           soilRaw: m.soilRaw,
           soilPct: m.soilPct,
           waterLevelPct: m.waterLevelPct ?? null,
+          lightPct: m.lightPct ?? null, // <-- BURAYA EKLEDİK (Zod şemasından gelen veri)
           rssi: m.rssi ?? null,
           vbat: m.vbat ?? null,
           gpsLat: m.gps?.lat ?? null,
@@ -110,6 +111,7 @@ async function main() {
           gpsHdop: m.gps?.hdop ?? null,
           receivedAt: now
         });
+        
         db.prepare(`update devices set lastTelemetryTs = ?, lastSeenTs = ? where deviceId = ?`).run(now, now, deviceId);
         setDeviceOnline(db, deviceId, true, now);
         rt.broadcast({ type: "telemetry", deviceId, data: m });

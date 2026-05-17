@@ -9,6 +9,7 @@ export const TelemetrySchema = z.object({
   soilRaw: z.number().int(),
   soilPct: z.number().finite().min(0).max(100),
   waterLevelPct: z.number().finite().min(0).max(100).optional(),
+  lightPct: z.number().optional().nullable(),
   rssi: z.number().int().optional(),
   vbat: z.number().finite().optional(),
   gps: z

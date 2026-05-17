@@ -1,3 +1,4 @@
+
 #include <Arduino.h>
 #include <WiFi.h>
 
@@ -75,7 +76,7 @@ void publishAvailability(bool online) {
 
   char buf[96];
   const size_t n = serializeJson(doc, buf, sizeof(buf));
-  mqtt.publish(topicAvailability().c_str(), buf, n, true /*retain*/);
+  mqtt.publish(topicAvailability().c_str(), (const uint8_t*)buf, n, true /*retain*/);
 }
 
 void publishState() {
@@ -93,7 +94,7 @@ void publishState() {
 
   char buf[256];
   const size_t n = serializeJson(doc, buf, sizeof(buf));
-  mqtt.publish(topicState().c_str(), buf, n, true /*retain*/);
+  mqtt.publish(topicState().c_str(), (const uint8_t*)buf, n, true /*retain*/);
 }
 
 void handleCmd(const JsonDocument &doc) {
@@ -199,13 +200,44 @@ bool ensureMqttConnected() {
 }
 
 void publishTelemetry() {
+  // Ultrasonik sensör pin modlarını burada garantiye alıyoruz
+  pinMode(PLANTY_DISTANCE_TRIG_PIN, OUTPUT);
+  pinMode(PLANTY_DISTANCE_ECHO_PIN, INPUT);
+
+  // --- 1. DHT22 Okuma ---
   const float tempC = dht.readTemperature();
   const float humidityPct = dht.readHumidity();
 
+  // --- 2. Toprak Nemi Okuma ---
   const int soilRaw = analogRead(PLANTY_SOIL_ADC_PIN);
   const float soilPct = soilRawToPct(soilRaw);
 
-  StaticJsonDocument<256> doc;
+  // --- 3. Işık Sensörü Okuma ---
+  const int lightRaw = analogRead(PLANTY_LIGHT_PIN);
+  const float lightPct = (lightRaw / 4095.0f) * 100.0f; // 12-bit ADC yüzdesi
+
+  // --- 4. HC-SR04 Su Seviyesi Okuma ---
+  digitalWrite(PLANTY_DISTANCE_TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(PLANTY_DISTANCE_TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(PLANTY_DISTANCE_TRIG_PIN, LOW);
+
+  const long duration = pulseIn(PLANTY_DISTANCE_ECHO_PIN, HIGH, 30000); // 30ms timeout
+  float waterLevelPct = 0.0f;
+  
+if (duration > 0) {
+    float distanceCm = duration * 0.034f / 2.0f;
+    waterLevelPct = ((PLANTY_TANK_MAX_DEPTH_CM - distanceCm) / PLANTY_TANK_MAX_DEPTH_CM) * 100.0f;
+    waterLevelPct = clampf(waterLevelPct, 0.0f, 100.0f);
+  } else {
+    // Sensör okunamazsa null veya 0 basarak sistemi kitlemesini önlüyoruz
+    waterLevelPct = 0.0f; 
+  }
+
+  // --- 5. JSON Paketleme ve Gönderme ---
+  // Sensör sayısı arttığı için buffer boyutunu 256'dan 384'e çıkardık
+  StaticJsonDocument<384> doc; 
   doc["deviceId"] = PLANTY_DEVICE_ID;
   doc["ts"] = epochMsApprox();
   doc["seq"] = seqCounter++;
@@ -214,15 +246,18 @@ void publishTelemetry() {
   if (!isnan(humidityPct)) doc["humidityPct"] = humidityPct;
   doc["soilRaw"] = soilRaw;
   doc["soilPct"] = soilPct;
+  doc["waterLevelPct"] = waterLevelPct;
+  doc["lightPct"] = lightPct; // Backend veritabanında varsa direkt kaydolur
 
   doc["rssi"] = WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0;
 
-  char buf[320];
+  char buf[384];
   const size_t n = serializeJson(doc, buf, sizeof(buf));
-  mqtt.publish(topicTelemetry().c_str(), buf, n, false /*retain*/);
+  mqtt.publish(topicTelemetry().c_str(), (const uint8_t*)buf, n, false /*retain*/);
 }
 } // namespace
 
+// Uygulamadaki V0 pinine basıldığında bu fonksiyon tetiklenir
 void setup() {
   Serial.begin(115200);
   delay(100);
