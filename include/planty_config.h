@@ -28,10 +28,20 @@
 // light sensor TEMT6000
 #define PLANTY_LIGHT_PIN 32
 
-//fan and pump control pins
-#define PLANTY_FAN_PIN 32
-
+// Actuators (relay module inputs). Do not share pins with sensors.
 #define PLANTY_PUMP_PIN 33
+#define PLANTY_FAN_PIN 26
+
+// Many relay boards are active-LOW (LOW = relay ON). Set to 0 if yours is active-HIGH.
+#ifndef PLANTY_RELAY_ACTIVE_LOW
+#define PLANTY_RELAY_ACTIVE_LOW 1
+#endif
+
+// Command safety (see docs/mqtt-and-payload-spec.md)
+#define PLANTY_PUMP_DURATION_MIN_MS 250
+#define PLANTY_PUMP_DURATION_MAX_MS 5000
+#define PLANTY_FAN_DURATION_MAX_MS 30000
+#define PLANTY_PUMP_COOLDOWN_MS 60000
 
 //distance sensor for the water level measurement
 #define PLANTY_DISTANCE_TRIG_PIN 5

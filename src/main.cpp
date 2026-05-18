@@ -6,8 +6,10 @@
 #include <ArduinoJson.h>
 
 #include <DHT.h>
+#include <Preferences.h>
 
 #include "planty_config.h"
+#include "actuator.h"
 
 #if __has_include("secrets.h")
 #include "secrets.h"
@@ -27,11 +29,33 @@ unsigned long lastTelemetryMs = 0;
 unsigned long lastWifiAttemptMs = 0;
 unsigned long lastMqttAttemptMs = 0;
 
-// State (actuation will be implemented in the next todo; keep default off)
-bool pumpOn = false;
-bool fanOn = false;
 const char *mode = "auto";
 char lastCmdId[48] = {0};
+bool mqttWasConnected = false;
+unsigned long cmdActuationAllowedAfterMs = 0;
+
+Preferences plantyPrefs;
+
+void loadPersistedCmdId() {
+  if (!plantyPrefs.begin("planty", true)) return;
+  const String s = plantyPrefs.getString("lastCmdId", "");
+  plantyPrefs.end();
+  if (s.length() > 0 && s.length() < sizeof(lastCmdId)) {
+    strncpy(lastCmdId, s.c_str(), sizeof(lastCmdId));
+    lastCmdId[sizeof(lastCmdId) - 1] = '\0';
+    Serial.printf("[cmd] restored lastCmdId=%s\n", lastCmdId);
+  }
+}
+
+void persistCmdId() {
+  if (!plantyPrefs.begin("planty", false)) return;
+  plantyPrefs.putString("lastCmdId", lastCmdId);
+  plantyPrefs.end();
+}
+
+bool isActuationType(const char *type) {
+  return strcmp(type, "pump") == 0 || strcmp(type, "fan") == 0 || strcmp(type, "stopAll") == 0;
+}
 
 String topicTelemetry() {
   return String(PLANTY_MQTT_BASE) + "/" + PLANTY_DEVICE_ID + "/telemetry";
@@ -83,8 +107,8 @@ void publishState() {
   StaticJsonDocument<192> doc;
   doc["deviceId"] = PLANTY_DEVICE_ID;
   doc["ts"] = epochMsApprox();
-  doc["pumpOn"] = pumpOn;
-  doc["fanOn"] = fanOn;
+  doc["pumpOn"] = actuatorIsPumpOn();
+  doc["fanOn"] = actuatorIsFanOn();
   doc["mode"] = mode;
   if (lastCmdId[0] == '\0') {
     doc["lastCmdId"] = nullptr;
@@ -97,37 +121,69 @@ void publishState() {
   mqtt.publish(topicState().c_str(), (const uint8_t*)buf, n, true /*retain*/);
 }
 
-void handleCmd(const JsonDocument &doc) {
+bool handleCmd(const JsonDocument &doc) {
   const char *cmdId = doc["cmdId"] | nullptr;
   const char *type = doc["type"] | nullptr;
 
-  if (!cmdId || !type) return;
-  if (strlen(cmdId) >= sizeof(lastCmdId)) return;
+  if (!cmdId || !type) return false;
+  if (strlen(cmdId) >= sizeof(lastCmdId)) return false;
 
-  // Idempotency: ignore duplicates
-  if (strncmp(lastCmdId, cmdId, sizeof(lastCmdId)) == 0) return;
+  // Idempotency: ignore duplicates (RAM + flash across reboots / retained MQTT)
+  if (strncmp(lastCmdId, cmdId, sizeof(lastCmdId)) == 0) {
+    Serial.printf("[cmd] duplicate ignored cmdId=%s\n", cmdId);
+    return false;
+  }
 
-  // Record ack (even if we don't actuate yet)
-  strncpy(lastCmdId, cmdId, sizeof(lastCmdId));
-  lastCmdId[sizeof(lastCmdId) - 1] = '\0';
+  if (isActuationType(type) && nowMs() < cmdActuationAllowedAfterMs) {
+    Serial.println("[cmd] actuation ignored during MQTT warm-up");
+    return false;
+  }
+
+  bool ok = true;
 
   if (strcmp(type, "setMode") == 0) {
     const char *newMode = doc["mode"] | nullptr;
     if (newMode && (strcmp(newMode, "auto") == 0 || strcmp(newMode, "manual") == 0)) {
       mode = (strcmp(newMode, "auto") == 0) ? "auto" : "manual";
+    } else {
+      ok = false;
     }
   } else if (strcmp(type, "stopAll") == 0) {
-    // Actuation comes later; keep local state consistent for now.
-    pumpOn = false;
-    fanOn = false;
+    actuatorStopAll();
   } else if (strcmp(type, "pump") == 0) {
-    // Parsed for now; actuation to be implemented in next todo.
-    pumpOn = (doc["on"] | false);
+    const bool on = doc["on"] | false;
+    if (on) {
+      if (doc["durationMs"].isNull()) {
+        ok = false;
+      } else {
+        const unsigned long durationMs = doc["durationMs"].as<unsigned long>();
+        ok = actuatorPump(true, durationMs);
+      }
+    } else {
+      ok = actuatorPump(false, 0);
+    }
   } else if (strcmp(type, "fan") == 0) {
-    fanOn = (doc["on"] | false);
+    const bool on = doc["on"] | false;
+    unsigned long durationMs = 0;
+    if (!doc["durationMs"].isNull()) {
+      durationMs = doc["durationMs"].as<unsigned long>();
+    }
+    ok = actuatorFan(on, durationMs);
+  } else {
+    ok = false;
   }
 
+  if (!ok) {
+    Serial.printf("[cmd] FAILED type=%s cmdId=%s\n", type, cmdId);
+    return false;
+  }
+
+  strncpy(lastCmdId, cmdId, sizeof(lastCmdId));
+  lastCmdId[sizeof(lastCmdId) - 1] = '\0';
+  persistCmdId();
   publishState();
+  Serial.printf("[cmd] ok type=%s cmdId=%s\n", type, cmdId);
+  return true;
 }
 
 void mqttCallback(char *topic, byte *payload, unsigned int length) {
@@ -193,17 +249,17 @@ bool ensureMqttConnected() {
 
   if (!ok) return false;
 
+  actuatorStopAll();
+  cmdActuationAllowedAfterMs = nowMs() + 5000;
+
   mqtt.subscribe(topicCmd().c_str(), 1);
   publishAvailability(true);
   publishState();
+  Serial.println("[mqtt] connected; actuation blocked 5s (ignore stale retained cmd)");
   return true;
 }
 
 void publishTelemetry() {
-  // Ultrasonik sensör pin modlarını burada garantiye alıyoruz
-  pinMode(PLANTY_DISTANCE_TRIG_PIN, OUTPUT);
-  pinMode(PLANTY_DISTANCE_ECHO_PIN, INPUT);
-
   // --- 1. DHT22 Okuma ---
   const float tempC = dht.readTemperature();
   const float humidityPct = dht.readHumidity();
@@ -265,17 +321,36 @@ void setup() {
   dht.begin();
   analogReadResolution(12);
 
+  pinMode(PLANTY_DISTANCE_TRIG_PIN, OUTPUT);
+  pinMode(PLANTY_DISTANCE_ECHO_PIN, INPUT);
+
+  actuatorInit();
+  loadPersistedCmdId();
+
   WiFi.mode(WIFI_STA);
   ensureWifiConnected();
+
+  Serial.println("[boot] actuators OFF; pump=33 fan=26 active-LOW");
 }
 
 void loop() {
   ensureWifiConnected();
-  ensureMqttConnected();
+
+  const bool mqttConnected = ensureMqttConnected();
+  if (mqttWasConnected && !mqttConnected) {
+    actuatorStopAll();
+    publishState();
+  }
+  mqttWasConnected = mqttConnected;
+
   mqtt.loop();
 
+  if (actuatorTick()) {
+    publishState();
+  }
+
   const unsigned long now = nowMs();
-  if (ensureMqttConnected() && (now - lastTelemetryMs >= PLANTY_TELEMETRY_INTERVAL_MS)) {
+  if (mqttConnected && (now - lastTelemetryMs >= PLANTY_TELEMETRY_INTERVAL_MS)) {
     lastTelemetryMs = now;
     publishTelemetry();
   }

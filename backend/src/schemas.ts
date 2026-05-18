@@ -41,13 +41,23 @@ export const CommandSchema = z.discriminatedUnion("type", [
     type: z.literal("setMode"),
     mode: z.enum(["auto", "manual"])
   }),
-  z.object({
-    cmdId: z.string().min(1),
-    ts: z.number().finite(),
-    type: z.literal("pump"),
-    on: z.boolean(),
-    durationMs: z.number().int().positive().nullable().optional()
-  }),
+  z
+    .object({
+      cmdId: z.string().min(1),
+      ts: z.number().finite(),
+      type: z.literal("pump"),
+      on: z.boolean(),
+      durationMs: z.number().int().positive().nullable().optional()
+    })
+    .superRefine((v, ctx) => {
+      if (v.on && (v.durationMs == null || v.durationMs < 250 || v.durationMs > 5000)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "pump on=true requires durationMs between 250 and 5000",
+          path: ["durationMs"]
+        });
+      }
+    }),
   z.object({
     cmdId: z.string().min(1),
     ts: z.number().finite(),

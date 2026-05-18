@@ -37,10 +37,23 @@ async function main() {
       mqttClient.publish(t.cmdTopic(deviceId), payload, { qos: 1, retain: false }, (err) => {
         const publishedAt = Date.now();
         if (!err) {
-          db.prepare(
-            `insert into command_log(cmdId, deviceId, ts, type, payload, publishedAt)
-             values(?, ?, ?, ?, ?, ?)`
-          ).run(cmdId, deviceId, Math.trunc(command.ts), command.type, payload, publishedAt);
+          // command_log references devices(deviceId); ensure row exists even if no telemetry yet
+          upsertDevice(db, deviceId, publishedAt);
+          try {
+            db.prepare(
+              `insert into command_log(cmdId, deviceId, ts, type, payload, publishedAt)
+               values(?, ?, ?, ?, ?, ?)
+               on conflict(cmdId) do update set
+                 deviceId = excluded.deviceId,
+                 ts = excluded.ts,
+                 type = excluded.type,
+                 payload = excluded.payload,
+                 publishedAt = excluded.publishedAt`
+            ).run(cmdId, deviceId, Math.trunc(command.ts), command.type, payload, publishedAt);
+          } catch (e) {
+            // eslint-disable-next-line no-console
+            console.error("command_log write failed", e);
+          }
         }
         resolve();
       });
