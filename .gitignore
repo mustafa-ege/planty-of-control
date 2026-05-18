@@ -19,6 +19,9 @@ node_modules/
 # Backend build output
 backend/dist/
 
+# Dashboard build output
+dashboard/dist/
+
 # Local backend data (SQLite + WAL/SHM)
 backend/data/*.sqlite
 backend/data/*.sqlite-*
