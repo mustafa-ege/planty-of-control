@@ -16,6 +16,7 @@ export type TelemetryPoint = {
   waterLevelPct: number | null;
   lightPct: number | null;
   rssi: number | null;
+  compatibilityScore?: number;
 };
 
 export type DeviceState = {

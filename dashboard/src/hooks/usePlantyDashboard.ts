@@ -73,7 +73,8 @@ export function usePlantyDashboard(deviceId: string) {
               soilPct: t.soilPct ?? 0,
               waterLevelPct: t.waterLevelPct ?? null,
               lightPct: t.lightPct ?? null,
-              rssi: t.rssi ?? null
+              rssi: t.rssi ?? null,
+              compatibilityScore: t.compatibilityScore
             },
             state: prev?.state ?? null
           }));

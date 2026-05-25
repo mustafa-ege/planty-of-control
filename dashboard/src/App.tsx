@@ -22,6 +22,13 @@ function fmtNum(v: number | null | undefined, suffix = "") {
   return `${v.toFixed(1)}${suffix}`;
 }
 
+function getCompatibilityStyle(score: number | undefined) {
+  if (score == null) return {};
+  if (score >= 80) return { color: "#40916c", borderColor: "#40916c" };
+  if (score >= 50) return { color: "#f77f00", borderColor: "#f77f00" };
+  return { color: "#d62828", borderColor: "#d62828" };
+}
+
 export default function App() {
   const [deviceId, setDeviceId] = useState(DEFAULT_DEVICE);
   const {
@@ -96,6 +103,10 @@ export default function App() {
       {error && <div className="alert error">{error}</div>}
 
       <section className="grid">
+        <div className="card" style={getCompatibilityStyle(t?.compatibilityScore)}>
+          <h2>Environmental Compatibility</h2>
+          <div className="metric">{t?.compatibilityScore != null ? `${t.compatibilityScore}%` : "N/A"}</div>
+        </div>
         <div className="card">
           <h2>Temperature</h2>
           <div className="metric">{fmtNum(t?.tempC, "°C")}</div>
