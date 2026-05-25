@@ -8,6 +8,23 @@ import { createRealtime } from "./realtime.js";
 import { createApi } from "./api.js";
 import { DeviceStateSchema, TelemetrySchema, type Command } from "./schemas.js";
 
+function calculateCompatibility(tempC?: number, humidityPct?: number, soilPct?: number): number {
+  const idealTemp = 24;
+  const idealHumidity = 50;
+  const idealSoil = 60;
+
+  if (tempC === undefined || humidityPct === undefined || soilPct === undefined) {
+    return 50;
+  }
+
+  const tempPenalty = Math.abs(tempC - idealTemp) * 2;
+  const humidityPenalty = Math.abs(humidityPct - idealHumidity);
+  const soilPenalty = Math.abs(soilPct - idealSoil);
+
+  const score = 100 - (tempPenalty + humidityPenalty + soilPenalty);
+  return Math.max(0, Math.min(100, score));
+}
+
 function upsertDevice(db: any, deviceId: string, now: number) {
   db.prepare(
     `insert into devices(deviceId, lastSeenTs, lastTelemetryTs, lastStateTs, online)
@@ -104,9 +121,11 @@ if (kind === "telemetry") {
         if (!parsed.success) return;
 
         const m = parsed.data;
+        const compatibilityScore = calculateCompatibility(m.tempC, m.humidityPct, m.soilPct);
+        
         db.prepare(
-          `insert into telemetry(deviceId, ts, seq, tempC, humidityPct, soilRaw, soilPct, waterLevelPct, lightPct, rssi, vbat, gpsLat, gpsLon, gpsHdop, receivedAt)
-           values(@deviceId, @ts, @seq, @tempC, @humidityPct, @soilRaw, @soilPct, @waterLevelPct, @lightPct, @rssi, @vbat, @gpsLat, @gpsLon, @gpsHdop, @receivedAt)`
+          `insert into telemetry(deviceId, ts, seq, tempC, humidityPct, soilRaw, soilPct, waterLevelPct, lightPct, rssi, vbat, gpsLat, gpsLon, gpsHdop, compatibilityScore, receivedAt)
+           values(@deviceId, @ts, @seq, @tempC, @humidityPct, @soilRaw, @soilPct, @waterLevelPct, @lightPct, @rssi, @vbat, @gpsLat, @gpsLon, @gpsHdop, @compatibilityScore, @receivedAt)`
         ).run({
           deviceId: m.deviceId,
           ts: Math.trunc(m.ts),
@@ -122,12 +141,13 @@ if (kind === "telemetry") {
           gpsLat: m.gps?.lat ?? null,
           gpsLon: m.gps?.lon ?? null,
           gpsHdop: m.gps?.hdop ?? null,
+          compatibilityScore,
           receivedAt: now
         });
         
         db.prepare(`update devices set lastTelemetryTs = ?, lastSeenTs = ? where deviceId = ?`).run(now, now, deviceId);
         setDeviceOnline(db, deviceId, true, now);
-        rt.broadcast({ type: "telemetry", deviceId, data: m });
+        rt.broadcast({ type: "telemetry", deviceId, data: { ...m, compatibilityScore } });
       } else if (kind === "state") {
         const parsed = DeviceStateSchema.safeParse(json);
         if (!parsed.success) return;

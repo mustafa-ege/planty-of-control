@@ -44,6 +44,7 @@ export function initDb(db: Db) {
       gpsLat real,
       gpsLon real,
       gpsHdop real,
+      compatibilityScore integer,
       receivedAt integer not null,
       foreign key(deviceId) references devices(deviceId)
     );

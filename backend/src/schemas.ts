@@ -12,6 +12,7 @@ export const TelemetrySchema = z.object({
   lightPct: z.number().optional().nullable(),
   rssi: z.number().int().optional(),
   vbat: z.number().finite().optional(),
+  compatibilityScore: z.number().int().min(0).max(100).optional(),
   gps: z
     .object({
       lat: z.number().finite(),
