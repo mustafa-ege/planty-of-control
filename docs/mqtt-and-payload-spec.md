@@ -133,7 +133,7 @@ Example:
 
 - `type`: `"pump"`
 - `on`: boolean
-- `durationMs` (number|null): required when `on=true` for MVP safety (e.g. 500–5000ms)
+- `durationMs` (number|null): required when `on=true` for MVP safety (e.g. 500–30000ms)
 
 Example:
 
@@ -176,7 +176,6 @@ Example:
 
 - Pump command must be **time-bound**; firmware enforces:
   - `durationMsMin = 250`
-  - `durationMsMax = 5000`
+  - `durationMsMax = 30000`
   - `cooldownMs = 60_000` between automatic pump activations
 - Firmware should fail safe: on parsing error, do nothing and keep actuators off.
-

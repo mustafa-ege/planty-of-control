@@ -13,6 +13,10 @@
 ```bash
 cd backend
 npm install
+
+# Turso veritabanı sürücüsünü (driver) kurmak için:
+npm uninstall better-sqlite3
+npm install @libsql/sqlite3
 ```
 
 2. Create `.env`:
@@ -34,4 +38,3 @@ npm run dev
 - `GET /api/devices/:id/latest`
 - `GET /api/devices/:id/telemetry?limit=300`
 - `POST /api/devices/:id/commands` (body must match the command schema in `src/schemas.ts`)
-

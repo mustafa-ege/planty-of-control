@@ -8,21 +8,45 @@ import { createRealtime } from "./realtime.js";
 import { createApi } from "./api.js";
 import { DeviceStateSchema, TelemetrySchema, type Command } from "./schemas.js";
 
-function calculateCompatibility(tempC?: number, humidityPct?: number, soilPct?: number): number {
-  const idealTemp = 24;
-  const idealHumidity = 50;
-  const idealSoil = 60;
+function calculateBestCompatibility(db: any, tempC?: number | null, humidityPct?: number | null, soilPct?: number | null, lightPct?: number | null): number {
+  const profiles = db.prepare('select * from plant_profiles').all();
+  if (!profiles || profiles.length === 0) return 50;
 
-  if (tempC === undefined || humidityPct === undefined || soilPct === undefined) {
-    return 50;
+  let bestScore = -1;
+  let bestPlant = "";
+
+  for (const p of profiles) {
+    let currentScore = 100;
+
+    // Eğer değer aralığın dışındaysa (min/max), aralığa olan uzaklığa göre puan kırıyoruz
+    if (tempC != null) {
+      if (tempC < p.idealTempMin) currentScore -= (p.idealTempMin - tempC) * 2;
+      else if (tempC > p.idealTempMax) currentScore -= (tempC - p.idealTempMax) * 2;
+    }
+    if (humidityPct != null) {
+      if (humidityPct < p.idealHumidityMin) currentScore -= (p.idealHumidityMin - humidityPct);
+      else if (humidityPct > p.idealHumidityMax) currentScore -= (humidityPct - p.idealHumidityMax);
+    }
+    if (soilPct != null) {
+      if (soilPct < p.idealSoilMin) currentScore -= (p.idealSoilMin - soilPct);
+      else if (soilPct > p.idealSoilMax) currentScore -= (soilPct - p.idealSoilMax);
+    }
+    // Işık oranını da hesaba katıyoruz
+    if (lightPct != null) {
+      if (lightPct < p.idealLightMin) currentScore -= (p.idealLightMin - lightPct);
+      else if (lightPct > p.idealLightMax) currentScore -= (lightPct - p.idealLightMax);
+    }
+
+    currentScore = Math.max(0, Math.min(100, currentScore));
+    if (currentScore > bestScore) {
+      bestScore = currentScore;
+      bestPlant = p.name;
+    }
   }
 
-  const tempPenalty = Math.abs(tempC - idealTemp) * 2;
-  const humidityPenalty = Math.abs(humidityPct - idealHumidity);
-  const soilPenalty = Math.abs(soilPct - idealSoil);
-
-  const score = 100 - (tempPenalty + humidityPenalty + soilPenalty);
-  return Math.max(0, Math.min(100, score));
+  // Terminalde anlık takip edebilmek için log atıyoruz
+  console.log(`[Compatibility] En uygun bitki: ${bestPlant} (Skor: ${Math.round(bestScore)})`);
+  return Math.round(bestScore);
 }
 
 function upsertDevice(db: any, deviceId: string, now: number) {
@@ -118,10 +142,14 @@ async function main() {
 
 if (kind === "telemetry") {
         const parsed = TelemetrySchema.safeParse(json);
-        if (!parsed.success) return;
+        if (!parsed.success) {
+          // eslint-disable-next-line no-console
+          console.error("Failed to parse telemetry", parsed.error);
+          return;
+        }
 
         const m = parsed.data;
-        const compatibilityScore = calculateCompatibility(m.tempC, m.humidityPct, m.soilPct);
+        const compatibilityScore = calculateBestCompatibility(db, m.tempC, m.humidityPct, m.soilPct, m.lightPct);
         
         db.prepare(
           `insert into telemetry(deviceId, ts, seq, tempC, humidityPct, soilRaw, soilPct, waterLevelPct, lightPct, rssi, vbat, gpsLat, gpsLon, gpsHdop, compatibilityScore, receivedAt)
@@ -204,4 +232,3 @@ main().catch((err) => {
   console.error(err);
   process.exit(1);
 });
-

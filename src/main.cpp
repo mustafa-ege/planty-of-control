@@ -7,6 +7,7 @@
 
 #include <DHT.h>
 #include <Preferences.h>
+#include <TinyGPSPlus.h>
 
 #include "planty_config.h"
 #include "actuator.h"
@@ -23,6 +24,9 @@ PubSubClient mqtt(espClient);
 
 DHT dht(PLANTY_DHT_PIN, PLANTY_DHT_TYPE);
 
+TinyGPSPlus gps;
+HardwareSerial gpsSerial(2); // ESP32 Donanımsal Serial2 portu
+
 uint32_t seqCounter = 0;
 
 unsigned long lastTelemetryMs = 0;
@@ -33,6 +37,9 @@ const char *mode = "auto";
 char lastCmdId[48] = {0};
 bool mqttWasConnected = false;
 unsigned long cmdActuationAllowedAfterMs = 0;
+
+// Anlık sensör gürültülerini önlemek için son stabil toprak nemini hafızada tutuyoruz
+float g_currentSoilPct = 100.0f; // Sistem ilk açıldığında koruma için %100 (ıslak) kabul edilir
 
 Preferences plantyPrefs;
 
@@ -156,8 +163,14 @@ bool handleCmd(const JsonDocument &doc) {
       if (doc["durationMs"].isNull()) {
         ok = false;
       } else {
-        const unsigned long durationMs = doc["durationMs"].as<unsigned long>();
-        ok = actuatorPump(true, durationMs);
+        // Anlık, parazitli okuma yapmak yerine hafızadaki son stabil değeri kullanıyoruz
+        if (g_currentSoilPct > 20.0f) {
+          Serial.printf("[cmd] pump REJECT: Toprak nemi %.1f%% (> 20%%)\n", g_currentSoilPct);
+          ok = false; // Nem %20'den yüksekse çalıştırmayı reddet
+        } else {
+          const unsigned long durationMs = doc["durationMs"].as<unsigned long>();
+          ok = actuatorPump(true, durationMs);
+        }
       }
     } else {
       ok = actuatorPump(false, 0);
@@ -202,6 +215,7 @@ void ensureWifiConnected() {
   if (now - lastWifiAttemptMs < 3000) return;
   lastWifiAttemptMs = now;
 
+  Serial.println("[wifi] Attempting to connect/reconnect to WiFi...");
   WiFi.mode(WIFI_STA);
   WiFi.begin(PLANTY_WIFI_SSID, PLANTY_WIFI_PASS);
 }
@@ -214,6 +228,7 @@ bool ensureMqttConnected() {
   if (now - lastMqttAttemptMs < 2000) return false;
   lastMqttAttemptMs = now;
 
+  Serial.println("[mqtt] Attempting to connect to broker...");
   mqtt.setServer(PLANTY_MQTT_HOST, PLANTY_MQTT_PORT);
   mqtt.setKeepAlive(PLANTY_MQTT_KEEPALIVE_SEC);
   mqtt.setCallback(mqttCallback);
@@ -247,7 +262,11 @@ bool ensureMqttConnected() {
         lwtBuf);
   }
 
-  if (!ok) return false;
+  if (!ok) {
+    Serial.print("[mqtt] Failed to connect, state code: ");
+    Serial.println(mqtt.state());
+    return false;
+  }
 
   actuatorStopAll();
   cmdActuationAllowedAfterMs = nowMs() + 5000;
@@ -264,51 +283,153 @@ void publishTelemetry() {
   const float tempC = dht.readTemperature();
   const float humidityPct = dht.readHumidity();
 
+  // Hafıza değişkenlerini tanımlıyoruz
+  static float lastValidTempC = NAN;
+  static float lastValidHumidity = NAN;
+
+  if (!isnan(tempC)) lastValidTempC = tempC;
+  if (!isnan(humidityPct)) lastValidHumidity = humidityPct;
+
+  if (isnan(tempC) || isnan(humidityPct)) {
+    Serial.println("[sensor] HATA: DHT sensorunden okuma basarisiz! (Tip: DHT22, Pin: 4)");
+  }
+
+  // --- Otomatik Mod Kontrolü (Fan) ---
+  if (strcmp(mode, "auto") == 0 && !isnan(lastValidHumidity)) {
+    bool fanStateChanged = false;
+    if (lastValidHumidity > PLANTY_FAN_HUMIDITY_THRESHOLD) {
+      if (!actuatorIsFanOn()) {
+        actuatorFan(true, 0); // Fanı sürekli çalışacak şekilde aç
+        Serial.printf("[auto] Nem %.1f > %.1f. Fan ACILDI.\n", lastValidHumidity, PLANTY_FAN_HUMIDITY_THRESHOLD);
+        fanStateChanged = true;
+      }
+    } else {
+      if (actuatorIsFanOn()) {
+        actuatorFan(false, 0); // Fanı kapat
+        Serial.printf("[auto] Nem %.1f <= %.1f. Fan KAPATILDI.\n", lastValidHumidity, PLANTY_FAN_HUMIDITY_THRESHOLD);
+        fanStateChanged = true;
+      }
+    }
+    if (fanStateChanged) publishState();
+  }
+
   // --- 2. Toprak Nemi Okuma ---
   const int soilRaw = analogRead(PLANTY_SOIL_ADC_PIN);
-  const float soilPct = soilRawToPct(soilRaw);
+  g_currentSoilPct = soilRawToPct(soilRaw); // Global değişkeni güncelliyoruz
+  const float soilPct = g_currentSoilPct;
+
+  // --- Otomatik Mod Kontrolü (Pompa) ---
+  if (strcmp(mode, "auto") == 0) {
+    if (soilPct < PLANTY_PUMP_SOIL_THRESHOLD) {
+      if (!actuatorIsPumpOn()) {
+        if (actuatorPump(true, 10000)) { // 10 saniye çalıştır (Cooldown süresi bitmişse çalışır)
+          Serial.printf("[auto] Toprak Nemi %.1f < %.1f. Pompa ACILDI (10s).\n", soilPct, PLANTY_PUMP_SOIL_THRESHOLD);
+          publishState();
+        }
+      }
+    }
+  }
 
   // --- 3. Işık Sensörü Okuma ---
   const int lightRaw = analogRead(PLANTY_LIGHT_PIN);
   const float lightPct = (lightRaw / 4095.0f) * 100.0f; // 12-bit ADC yüzdesi
 
-  // --- 4. HC-SR04 Su Seviyesi Okuma ---
-  digitalWrite(PLANTY_DISTANCE_TRIG_PIN, LOW);
-  delayMicroseconds(2);
-  digitalWrite(PLANTY_DISTANCE_TRIG_PIN, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(PLANTY_DISTANCE_TRIG_PIN, LOW);
+  // Geçici hatalarda (gürültülerde) son doğru değeri hatırlamak için static değişken
+  static float lastValidWaterLevelPct = 0.0f;
 
-  const long duration = pulseIn(PLANTY_DISTANCE_ECHO_PIN, HIGH, 30000); // 30ms timeout
+  // --- 4. HC-SR04 Su Seviyesi Okuma ---
+  float distanceCm = -1.0f;
+  float readings[5];
+  int validCount = 0;
+
+  // 5 defa hızlıca okuma yapıp hatalı zıplamaları eleyeceğiz (Medyan Filtresi)
+  for (int i = 0; i < 5; i++) {
+    digitalWrite(PLANTY_DISTANCE_TRIG_PIN, LOW);
+    delayMicroseconds(2);
+    digitalWrite(PLANTY_DISTANCE_TRIG_PIN, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(PLANTY_DISTANCE_TRIG_PIN, LOW);
+
+    long d_us = pulseIn(PLANTY_DISTANCE_ECHO_PIN, HIGH, 30000);
+    if (d_us > 0) {
+      float d = d_us * 0.034f / 2.0f;
+      if (d >= 2.0f) { // 0.9 cm gibi donanımsal gürültüleri (default veri) listeye hiç alma
+        readings[validCount++] = d;
+      }
+    }
+    delay(60); // HC-SR04 datasheet'ine göre yankıların birbirine karışmaması için min 60ms bekleme
+  }
+
+  if (validCount > 0) {
+    // Değerleri küçükten büyüğe sırala (Bubble Sort)
+    for (int i = 0; i < validCount - 1; i++) {
+      for (int j = i + 1; j < validCount; j++) {
+        if (readings[i] > readings[j]) {
+          float temp = readings[i];
+          readings[i] = readings[j];
+          readings[j] = temp;
+        }
+      }
+    }
+    // Medyan (ortadaki en stabil) değeri al
+    distanceCm = readings[validCount / 2];
+  }
+
   float waterLevelPct = 0.0f;
   
-if (duration > 0) {
-    float distanceCm = duration * 0.034f / 2.0f;
-    waterLevelPct = ((PLANTY_TANK_MAX_DEPTH_CM - distanceCm) / PLANTY_TANK_MAX_DEPTH_CM) * 100.0f;
-    waterLevelPct = clampf(waterLevelPct, 0.0f, 100.0f);
+  if (distanceCm > 0.0f) {
+    if (distanceCm > PLANTY_TANK_MAX_DEPTH_CM) {
+      waterLevelPct = 0.0f;
+    } else {
+      waterLevelPct = ((PLANTY_TANK_MAX_DEPTH_CM - distanceCm) / PLANTY_TANK_MAX_DEPTH_CM) * 100.0f;
+    }
+    lastValidWaterLevelPct = waterLevelPct;
+    Serial.printf("[sensor] HC-SR04: Filtrelenmis mesafe=%.1f cm, seviye=%.1f%%\n", distanceCm, waterLevelPct);
   } else {
-    // Sensör okunamazsa null veya 0 basarak sistemi kitlemesini önlüyoruz
-    waterLevelPct = 0.0f; 
+    waterLevelPct = lastValidWaterLevelPct; 
+    Serial.println("[sensor] HC-SR04: Tum okumalar gurultulu veya sensör baglantisiz!");
   }
 
   // --- 5. JSON Paketleme ve Gönderme ---
-  // Sensör sayısı arttığı için buffer boyutunu 256'dan 384'e çıkardık
-  StaticJsonDocument<384> doc; 
+  // GPS dahil edildiği için buffer boyutunu 512'e çıkardık
+  StaticJsonDocument<512> doc; 
   doc["deviceId"] = PLANTY_DEVICE_ID;
   doc["ts"] = epochMsApprox();
   doc["seq"] = seqCounter++;
 
-  if (!isnan(tempC)) doc["tempC"] = tempC;
-  if (!isnan(humidityPct)) doc["humidityPct"] = humidityPct;
+  if (!isnan(lastValidTempC)) doc["tempC"] = lastValidTempC;
+  if (!isnan(lastValidHumidity)) doc["humidityPct"] = lastValidHumidity;
   doc["soilRaw"] = soilRaw;
   doc["soilPct"] = soilPct;
   doc["waterLevelPct"] = waterLevelPct;
   doc["lightPct"] = lightPct; // Backend veritabanında varsa direkt kaydolur
 
+  // --- 6. GPS Hafıza Mantığı ---
+  static float lastValidLat = NAN;
+  static float lastValidLon = NAN;
+  static float lastValidHdop = NAN;
+
+  if (gps.location.isValid()) {
+    lastValidLat = gps.location.lat();
+    lastValidLon = gps.location.lng();
+    if (gps.hdop.isValid()) lastValidHdop = gps.hdop.hdop();
+    Serial.printf("[gps] Konum BULUNDU! Lat: %.6f, Lon: %.6f, HDOP: %.1f\n", lastValidLat, lastValidLon, lastValidHdop);
+  } else {
+    Serial.printf("[gps] Uydular araniyor... Islenen veri: %u karakter\n", gps.charsProcessed());
+  }
+
+  if (!isnan(lastValidLat) && !isnan(lastValidLon)) {
+    JsonObject gpsObj = doc.createNestedObject("gps");
+    gpsObj["lat"] = lastValidLat;
+    gpsObj["lon"] = lastValidLon;
+    if (!isnan(lastValidHdop)) gpsObj["hdop"] = lastValidHdop;
+  }
+
   doc["rssi"] = WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0;
 
-  char buf[384];
+  char buf[512];
   const size_t n = serializeJson(doc, buf, sizeof(buf));
+  Serial.printf("[telemetry] publishing: %s\n", buf);
   mqtt.publish(topicTelemetry().c_str(), (const uint8_t*)buf, n, false /*retain*/);
 }
 } // namespace
@@ -324,6 +445,8 @@ void setup() {
   pinMode(PLANTY_DISTANCE_TRIG_PIN, OUTPUT);
   pinMode(PLANTY_DISTANCE_ECHO_PIN, INPUT);
 
+  gpsSerial.begin(PLANTY_GPS_BAUD, SERIAL_8N1, PLANTY_GPS_RX_PIN, PLANTY_GPS_TX_PIN);
+
   actuatorInit();
   loadPersistedCmdId();
 
@@ -334,6 +457,11 @@ void setup() {
 }
 
 void loop() {
+  // GPS'ten gelen sürekli seri veriyi arka planda işle
+  while (gpsSerial.available() > 0) {
+    gps.encode(gpsSerial.read());
+  }
+
   ensureWifiConnected();
 
   const bool mqttConnected = ensureMqttConnected();

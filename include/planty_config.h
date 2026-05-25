@@ -34,12 +34,13 @@
 
 // Many relay boards are active-LOW (LOW = relay ON). Set to 0 if yours is active-HIGH.
 #ifndef PLANTY_RELAY_ACTIVE_LOW
+// Eger kapatma komutlari motorlari calistiriyorsa role Active-LOW'dur:
 #define PLANTY_RELAY_ACTIVE_LOW 1
 #endif
 
 // Command safety (see docs/mqtt-and-payload-spec.md)
 #define PLANTY_PUMP_DURATION_MIN_MS 250
-#define PLANTY_PUMP_DURATION_MAX_MS 5000
+#define PLANTY_PUMP_DURATION_MAX_MS 30000
 #define PLANTY_FAN_DURATION_MAX_MS 30000
 #define PLANTY_PUMP_COOLDOWN_MS 60000
 
@@ -48,9 +49,17 @@
 #define PLANTY_DISTANCE_ECHO_PIN 18
 #define PLANTY_TANK_MAX_DEPTH_CM 20
 
+// GPS Module (NEO-M8N)
+#define PLANTY_GPS_RX_PIN 16
+#define PLANTY_GPS_TX_PIN 17
+#define PLANTY_GPS_BAUD 9600
+
+// Otomatik Mod Eşik Değerleri
+#define PLANTY_FAN_HUMIDITY_THRESHOLD 80.0
+#define PLANTY_PUMP_SOIL_THRESHOLD 15.0
+
 // Telemetry cadence
 #define PLANTY_TELEMETRY_INTERVAL_MS 5000
 
 // MQTT client settings
 #define PLANTY_MQTT_KEEPALIVE_SEC 30
-

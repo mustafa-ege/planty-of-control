@@ -11,10 +11,18 @@ import type {
 
 export const OFFLINE_AFTER_MS = 30_000;
 const POLL_MS = 5_000;
+const CACHE_KEY = "planty_latest";
 
 export function usePlantyDashboard(deviceId: string) {
   const [devices, setDevices] = useState<DeviceRow[]>([]);
-  const [latest, setLatest] = useState<LatestSnapshot | null>(null);
+  const [latest, setLatest] = useState<LatestSnapshot | null>(() => {
+    // Sayfa yenilendiginde bekleme yapmamak icin son veriyi LocalStorage'dan alir
+    const cached = localStorage.getItem(`${CACHE_KEY}_${deviceId}`);
+    if (cached) {
+      try { return JSON.parse(cached); } catch {}
+    }
+    return null;
+  });
   const [history, setHistory] = useState<TelemetryPoint[]>([]);
   const [wsConnected, setWsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -29,8 +37,37 @@ export function usePlantyDashboard(deviceId: string) {
         fetchTelemetry(deviceId, 120)
       ]);
       setDevices(devs);
-      setLatest(snap);
-      setHistory(series);
+      
+      // Geçmiş verilerdeki (History) kopuklukları bir önceki değerle doldur
+      const filledSeries = series.reduce((acc, curr) => {
+        const last = acc.length > 0 ? acc[acc.length - 1] : null;
+        acc.push({
+          ...curr,
+          tempC: curr.tempC ?? last?.tempC ?? null,
+          humidityPct: curr.humidityPct ?? last?.humidityPct ?? null,
+          waterLevelPct: curr.waterLevelPct ?? last?.waterLevelPct ?? null,
+          lightPct: curr.lightPct ?? last?.lightPct ?? null,
+        });
+        return acc;
+      }, [] as TelemetryPoint[]);
+      setHistory(filledSeries);
+
+      // API'den gelen veride anlık eksiklik (null) varsa, ekrandaki son geçerli değeri koru
+      setLatest((prev) => {
+        if (!prev || !snap.telemetry) return snap;
+        return {
+          deviceId: snap.deviceId,
+          telemetry: {
+            ...snap.telemetry,
+            tempC: snap.telemetry.tempC ?? prev.telemetry?.tempC ?? null,
+            humidityPct: snap.telemetry.humidityPct ?? prev.telemetry?.humidityPct ?? null,
+            waterLevelPct: snap.telemetry.waterLevelPct ?? prev.telemetry?.waterLevelPct ?? null,
+            lightPct: snap.telemetry.lightPct ?? prev.telemetry?.lightPct ?? null,
+            gps: (snap.telemetry as any).gps ?? (prev.telemetry as any)?.gps ?? null
+          },
+          state: snap.state ?? prev.state
+        };
+      });
       const row = devs.find((d) => d.deviceId === deviceId);
       if (row?.lastTelemetryTs) setLastHeardAt(row.lastTelemetryTs);
       else if (snap.telemetry) setLastHeardAt(Date.now());
@@ -39,6 +76,13 @@ export function usePlantyDashboard(deviceId: string) {
       setError(e instanceof Error ? e.message : "Failed to load data");
     }
   }, [deviceId]);
+
+  // Güncel veriyi her değiştiğinde LocalStorage'a kaydet (Sayfa yenilendiğinde boş görünmemesi için)
+  useEffect(() => {
+    if (latest) {
+      localStorage.setItem(`${CACHE_KEY}_${deviceId}`, JSON.stringify(latest));
+    }
+  }, [latest, deviceId]);
 
   useEffect(() => {
     void refresh();
@@ -79,7 +123,16 @@ export function usePlantyDashboard(deviceId: string) {
             state: prev?.state ?? null
           }));
           setHistory((prev) => {
-            const next = [...prev, t as TelemetryPoint];
+            const last = prev.length > 0 ? prev[prev.length - 1] : null;
+            const mergedT = {
+              ...t,
+              tempC: t.tempC ?? last?.tempC ?? null,
+              humidityPct: t.humidityPct ?? last?.humidityPct ?? null,
+              waterLevelPct: t.waterLevelPct ?? last?.waterLevelPct ?? null,
+              lightPct: t.lightPct ?? last?.lightPct ?? null,
+            } as TelemetryPoint;
+            
+            const next = [...prev, mergedT];
             return next.length > 120 ? next.slice(-120) : next;
           });
         } else if (msg.type === "state") {
@@ -130,13 +183,13 @@ export function usePlantyDashboard(deviceId: string) {
   );
 
   const pump = useCallback(
-    (on: boolean, durationMs = 1500) =>
+    (on: boolean, durationMs = 10000) =>
       postCommand({
         cmdId: newCmdId(),
         ts: Date.now(),
         type: "pump",
         on,
-        durationMs: on ? durationMs : null
+        durationMs: on ? durationMs : undefined
       }),
     [postCommand]
   );
@@ -148,7 +201,7 @@ export function usePlantyDashboard(deviceId: string) {
         ts: Date.now(),
         type: "fan",
         on,
-        durationMs: on ? durationMs : null
+        durationMs: on ? durationMs : undefined
       }),
     [postCommand]
   );

@@ -10,6 +10,7 @@ import {
   YAxis
 } from "recharts";
 import { usePlantyDashboard, OFFLINE_AFTER_MS } from "./hooks/usePlantyDashboard";
+import { GpsWidget } from "./GpsWidget";
 
 const DEFAULT_DEVICE = "esp32-001";
 
@@ -134,6 +135,7 @@ export default function App() {
           </p>
           {s?.lastCmdId && <p className="status-line">Last cmd: {s.lastCmdId}</p>}
         </div>
+        <GpsWidget telemetry={t} />
       </section>
 
       <section className="card" style={{ marginBottom: "1rem" }}>
@@ -161,8 +163,8 @@ export default function App() {
       <section className="card">
         <h2>Controls</h2>
         <div className="controls">
-          <button type="button" className="primary" disabled={isOffline} onClick={() => void pump(true, 1500)}>
-            Water 1.5s
+          <button type="button" className="primary" disabled={isOffline} onClick={() => void pump(true, 10000)}>
+            Water 10s
           </button>
           <button type="button" disabled={isOffline} onClick={() => void pump(false)}>
             Pump off

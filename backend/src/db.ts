@@ -44,7 +44,6 @@ export function initDb(db: Db) {
       gpsLat real,
       gpsLon real,
       gpsHdop real,
-      compatibilityScore integer,
       receivedAt integer not null,
       foreign key(deviceId) references devices(deviceId)
     );
@@ -71,6 +70,26 @@ export function initDb(db: Db) {
       publishedAt integer not null,
       foreign key(deviceId) references devices(deviceId)
     );
+
+    create table if not exists plant_profiles (
+      id text primary key,
+      name text not null,
+      idealTempMin real not null,
+      idealTempMax real not null,
+      idealHumidityMin real not null,
+      idealHumidityMax real not null,
+      idealSoilMin real not null,
+      idealSoilMax real not null,
+      idealLightMin real not null,
+      idealLightMax real not null
+    );
+
+    insert or ignore into plant_profiles 
+      (id, name, idealTempMin, idealTempMax, idealHumidityMin, idealHumidityMax, idealSoilMin, idealSoilMax, idealLightMin, idealLightMax)
+    values
+      ('p_kaktus', 'Kaktus (Dummy)', 25, 35, 10, 30, 5, 20, 80, 100),
+      ('p_egrelti', 'Egrelti Otu (Dummy)', 18, 24, 60, 90, 50, 80, 20, 50),
+      ('p_domates', 'Domates (Dummy)', 20, 28, 40, 60, 40, 70, 70, 100),
+      ('p_orkide', 'Orkide (Dummy)', 20, 28, 50, 75, 30, 60, 40, 70);
   `);
 }
-
