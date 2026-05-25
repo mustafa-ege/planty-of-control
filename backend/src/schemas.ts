@@ -66,15 +66,14 @@ export const CommandSchema = z
     if (
       v.type === "pump" &&
       v.on &&
-      (v.durationMs == null || v.durationMs < 250 || v.durationMs > 5000)
+      (v.durationMs == null || v.durationMs < 250 || v.durationMs > 30000)
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "pump on=true requires durationMs between 250 and 5000",
+        message: "pump on=true requires durationMs between 250 and 30000",
         path: ["durationMs"]
       });
     }
   });
 
 export type Command = z.infer<typeof CommandSchema>;
-

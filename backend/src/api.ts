@@ -90,7 +90,7 @@ const telemetry = (db
 
   const rows = db
       .prepare(
-        `select ts, seq, tempC, humidityPct, soilRaw, soilPct, waterLevelPct, lightPct, rssi
+        `select ts, seq, tempC, humidityPct, soilRaw, soilPct, waterLevelPct, lightPct, rssi, vbat, gpsLat, gpsLon, gpsHdop
          from telemetry
          where deviceId = ?
          order by ts desc
@@ -116,4 +116,3 @@ const telemetry = (db
 
   return app;
 }
-
